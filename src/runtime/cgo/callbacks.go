@@ -11,7 +11,7 @@ import "unsafe"
 
 // cgocallback is defined in runtime
 //go:linkname _runtime_cgocallback runtime.cgocallback
-func _runtime_cgocallback(unsafe.Pointer, unsafe.Pointer, uintptr)
+func _runtime_cgocallback(unsafe.Pointer, unsafe.Pointer, uintptr, uintptr)
 
 // The declaration of crosscall2 is:
 //   void crosscall2(void (*fn)(void *, int), void *, int);
@@ -19,6 +19,10 @@ func _runtime_cgocallback(unsafe.Pointer, unsafe.Pointer, uintptr)
 // We need to export the symbol crosscall2 in order to support
 // callbacks from shared libraries. This applies regardless of
 // linking mode.
+//
+// Compatibility note: crosscall2 actually takes four arguments, but
+// it works to call it with three arguments when calling _cgo_panic.
+// That is supported for backward compatibility.
 //go:cgo_export_static crosscall2
 //go:cgo_export_dynamic crosscall2
 
@@ -31,7 +35,7 @@ func _runtime_cgocallback(unsafe.Pointer, unsafe.Pointer, uintptr)
 //   /* The function call will not return.  */
 
 //go:linkname _runtime_cgo_panic_internal runtime._cgo_panic_internal
-var _runtime_cgo_panic_internal byte
+func _runtime_cgo_panic_internal(p *byte)
 
 //go:linkname _cgo_panic _cgo_panic
 //go:cgo_export_static _cgo_panic
@@ -39,7 +43,12 @@ var _runtime_cgo_panic_internal byte
 //go:nosplit
 //go:norace
 func _cgo_panic(a unsafe.Pointer, n int32) {
-	_runtime_cgocallback(unsafe.Pointer(&_runtime_cgo_panic_internal), a, uintptr(n))
+	f := _runtime_cgo_panic_internal
+	type funcval struct {
+		pc unsafe.Pointer
+	}
+	fv := *(**funcval)(unsafe.Pointer(&f))
+	_runtime_cgocallback(fv.pc, a, uintptr(n), 0)
 }
 
 //go:cgo_import_static x_cgo_init
@@ -47,18 +56,6 @@ func _cgo_panic(a unsafe.Pointer, n int32) {
 //go:linkname _cgo_init _cgo_init
 var x_cgo_init byte
 var _cgo_init = &x_cgo_init
-
-//go:cgo_import_static x_cgo_malloc
-//go:linkname x_cgo_malloc x_cgo_malloc
-//go:linkname _cgo_malloc _cgo_malloc
-var x_cgo_malloc byte
-var _cgo_malloc = &x_cgo_malloc
-
-//go:cgo_import_static x_cgo_free
-//go:linkname x_cgo_free x_cgo_free
-//go:linkname _cgo_free _cgo_free
-var x_cgo_free byte
-var _cgo_free = &x_cgo_free
 
 //go:cgo_import_static x_cgo_thread_start
 //go:linkname x_cgo_thread_start x_cgo_thread_start
@@ -91,6 +88,24 @@ var _cgo_sys_thread_create = &x_cgo_sys_thread_create
 //go:linkname _cgo_notify_runtime_init_done _cgo_notify_runtime_init_done
 var x_cgo_notify_runtime_init_done byte
 var _cgo_notify_runtime_init_done = &x_cgo_notify_runtime_init_done
+
+// Sets the traceback context function. See runtime.SetCgoTraceback.
+
+//go:cgo_import_static x_cgo_set_context_function
+//go:linkname x_cgo_set_context_function x_cgo_set_context_function
+//go:linkname _cgo_set_context_function _cgo_set_context_function
+var x_cgo_set_context_function byte
+var _cgo_set_context_function = &x_cgo_set_context_function
+
+// Calls a libc function to execute background work injected via libc
+// interceptors, such as processing pending signals under the thread
+// sanitizer.
+//
+// Left as a nil pointer if no libc interceptors are expected.
+
+//go:cgo_import_static _cgo_yield
+//go:linkname _cgo_yield _cgo_yield
+var _cgo_yield unsafe.Pointer
 
 //go:cgo_export_static _cgo_topofstack
 //go:cgo_export_dynamic _cgo_topofstack

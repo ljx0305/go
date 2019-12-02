@@ -9,9 +9,12 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 
-static volatile long runtime_init_once_gate = 0;
-static volatile long runtime_init_once_done = 0;
+#include "libcgo.h"
+
+static volatile LONG runtime_init_once_gate = 0;
+static volatile LONG runtime_init_once_done = 0;
 
 static CRITICAL_SECTION runtime_init_cs;
 
@@ -66,12 +69,23 @@ _cgo_is_runtime_initialized() {
 	 return status;
 }
 
-void
-_cgo_wait_runtime_init_done() {
+uintptr_t
+_cgo_wait_runtime_init_done(void) {
+	void (*pfn)(struct context_arg*);
+
 	 _cgo_maybe_run_preinit();
 	while (!_cgo_is_runtime_initialized()) {
 			WaitForSingleObject(runtime_init_wait, INFINITE);
 	}
+	pfn = _cgo_get_context_function();
+	if (pfn != nil) {
+		struct context_arg arg;
+
+		arg.Context = 0;
+		(*pfn)(&arg);
+		return arg.Context;
+	}
+	return 0;
 }
 
 void
@@ -88,3 +102,23 @@ x_cgo_notify_runtime_init_done(void* dummy) {
 	}
 }
 
+// The context function, used when tracing back C calls into Go.
+static void (*cgo_context_function)(struct context_arg*);
+
+// Sets the context function to call to record the traceback context
+// when calling a Go function from C code. Called from runtime.SetCgoTraceback.
+void x_cgo_set_context_function(void (*context)(struct context_arg*)) {
+	EnterCriticalSection(&runtime_init_cs);
+	cgo_context_function = context;
+	LeaveCriticalSection(&runtime_init_cs);
+}
+
+// Gets the context function.
+void (*(_cgo_get_context_function(void)))(struct context_arg*) {
+	void (*ret)(struct context_arg*);
+
+	EnterCriticalSection(&runtime_init_cs);
+	ret = cgo_context_function;
+	LeaveCriticalSection(&runtime_init_cs);
+	return ret;
+}

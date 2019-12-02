@@ -7,6 +7,7 @@ package gzip
 import (
 	"bytes"
 	"compress/flate"
+	"encoding/base64"
 	"io"
 	"io/ioutil"
 	"os"
@@ -339,6 +340,26 @@ var gunzipTests = []gunzipTest{
 		},
 		nil,
 	},
+	{
+		"",
+		"truncated gzip file amid raw-block",
+		"hello",
+		[]byte{
+			0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+			0x00, 0x0c, 0x00, 0xf3, 0xff, 0x68, 0x65, 0x6c, 0x6c, 0x6f,
+		},
+		io.ErrUnexpectedEOF,
+	},
+	{
+		"",
+		"truncated gzip file amid fixed-block",
+		"He",
+		[]byte{
+			0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+			0xf2, 0x48, 0xcd,
+		},
+		io.ErrUnexpectedEOF,
+	},
 }
 
 func TestDecompressor(t *testing.T) {
@@ -393,11 +414,16 @@ func TestDecompressor(t *testing.T) {
 }
 
 func TestIssue6550(t *testing.T) {
-	f, err := os.Open("testdata/issue6550.gz")
+	// Apple’s notarization service will recursively attempt to decompress
+	// files in order to find binaries to notarize. Since the service is
+	// unable to decompress this file, it may reject the entire toolchain. Use a
+	// base64-encoded version to avoid this.
+	// See golang.org/issue/34986
+	f, err := os.Open("testdata/issue6550.gz.base64")
 	if err != nil {
 		t.Fatal(err)
 	}
-	gzip, err := NewReader(f)
+	gzip, err := NewReader(base64.NewDecoder(base64.StdEncoding, f))
 	if err != nil {
 		t.Fatalf("NewReader(testdata/issue6550.gz): %v", err)
 	}

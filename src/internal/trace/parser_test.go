@@ -7,6 +7,7 @@ package trace
 import (
 	"bytes"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,8 +26,8 @@ func TestCorruptedInputs(t *testing.T) {
 		"go 1.5 trace\x00\x00\x00\x00\xc3\x0200",
 	}
 	for _, data := range tests {
-		events, err := Parse(strings.NewReader(data), "")
-		if err == nil || events != nil {
+		res, err := Parse(strings.NewReader(data), "")
+		if err == nil || res.Events != nil || res.Stacks != nil {
 			t.Fatalf("no error on input: %q", data)
 		}
 	}
@@ -38,11 +39,21 @@ func TestParseCanned(t *testing.T) {
 		t.Fatalf("failed to read ./testdata: %v", err)
 	}
 	for _, f := range files {
-		data, err := ioutil.ReadFile(filepath.Join("./testdata", f.Name()))
+		name := filepath.Join("./testdata", f.Name())
+		info, err := os.Stat(name)
 		if err != nil {
-			t.Fatalf("failed to read input file: %v", err)
+			t.Fatal(err)
 		}
-		_, err = Parse(bytes.NewReader(data), "")
+		if testing.Short() && info.Size() > 10000 {
+			continue
+		}
+		data, err := ioutil.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Instead of Parse that requires a proper binary name for old traces,
+		// we use 'parse' that omits symbol lookup if an empty string is given.
+		_, _, err = parse(bytes.NewReader(data), "")
 		switch {
 		case strings.HasSuffix(f.Name(), "_good"):
 			if err != nil {
@@ -88,52 +99,13 @@ func TestParseVersion(t *testing.T) {
 
 func TestTimestampOverflow(t *testing.T) {
 	// Test that parser correctly handles large timestamps (long tracing).
-	w := newWriter()
-	w.emit(EvBatch, 0, 0, 0)
-	w.emit(EvFrequency, 1e9, 0)
+	w := NewWriter()
+	w.Emit(EvBatch, 0, 0)
+	w.Emit(EvFrequency, 1e9)
 	for ts := uint64(1); ts < 1e16; ts *= 2 {
-		w.emit(EvGoCreate, 1, ts, ts, 1, 0)
+		w.Emit(EvGoCreate, ts, ts, 0, 0)
 	}
 	if _, err := Parse(w, ""); err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
-}
-
-type writer struct {
-	bytes.Buffer
-}
-
-func newWriter() *writer {
-	w := new(writer)
-	w.Write([]byte("go 1.7 trace\x00\x00\x00\x00"))
-	return w
-}
-
-func (w *writer) emit(typ byte, args ...uint64) {
-	nargs := byte(len(args)) - 2
-	if nargs > 3 {
-		nargs = 3
-	}
-	buf := []byte{typ | nargs<<6}
-	if nargs == 3 {
-		buf = append(buf, 0)
-	}
-	for _, a := range args {
-		buf = appendVarint(buf, a)
-	}
-	if nargs == 3 {
-		buf[1] = byte(len(buf) - 2)
-	}
-	n, err := w.Write(buf)
-	if n != len(buf) || err != nil {
-		panic("failed to write")
-	}
-}
-
-func appendVarint(buf []byte, v uint64) []byte {
-	for ; v >= 0x80; v >>= 7 {
-		buf = append(buf, 0x80|byte(v))
-	}
-	buf = append(buf, byte(v))
-	return buf
 }

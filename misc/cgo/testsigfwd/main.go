@@ -25,6 +25,7 @@ static void sigsegv() {
 
 static void segvhandler(int signum) {
 	if (signum == SIGSEGV) {
+		fprintf(stdout, "ok\ttestsigfwd\n");
 		exit(0);  // success
 	}
 }
@@ -50,6 +51,7 @@ static void iohandler(int signum) {
 
 static void* sigioThread(void* arg __attribute__ ((unused))) {
 	raise(SIGIO);
+	return NULL;
 }
 
 static void sigioOnThread() {

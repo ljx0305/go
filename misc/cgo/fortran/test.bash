@@ -9,11 +9,32 @@ set -e
 
 FC=$1
 
-if ! $FC helloworld/helloworld.f90 -o main.exe >& /dev/null; then
+goos=$(go env GOOS)
+
+libext="so"
+if [ "$goos" = "darwin" ]; then
+	libext="dylib"
+elif [ "$goos" = "aix" ]; then
+	libtext="a"
+fi
+
+case "$FC" in
+*gfortran*)
+  libpath=$(dirname $($FC -print-file-name=libgfortran.$libext))
+  if [ "$goos" != "aix" ]; then
+	  RPATH_FLAG="-Wl,-rpath,$libpath"
+  fi
+  export CGO_LDFLAGS="$CGO_LDFLAGS $RPATH_FLAG -L $libpath"
+  ;;
+esac
+
+if ! $FC helloworld/helloworld.f90 -o /dev/null >& /dev/null; then
   echo "skipping Fortran test: could not build helloworld.f90 with $FC"
   exit 0
 fi
 rm -f main.exe
+
+status=0
 
 if ! go test; then
   echo "FAIL: go test"

@@ -1,7 +1,8 @@
 // +build amd64
-// errorcheck -0 -d=ssa/likelyadjust/debug=1
+// errorcheck -0 -d=ssa/likelyadjust/debug=1,ssa/insert_resched_checks/off
+// rescheduling check insertion is turned off because the inserted conditional branches perturb the errorcheck
 
-// Copyright 2016 The Go Authors.  All rights reserved.
+// Copyright 2016 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 

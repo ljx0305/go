@@ -1,4 +1,4 @@
-// Copyright 2016 The Go Authors.  All rights reserved.
+// Copyright 2016 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -15,21 +15,22 @@ package main
 
 char *p;
 
-static int f3() {
+static int f3(void) {
 	*p = 0;
 	return 0;
 }
 
-static int f2() {
+static int f2(void) {
 	return f3();
 }
 
-static int f1() {
+static int f1(void) {
 	return f2();
 }
 
 struct cgoTracebackArg {
 	uintptr_t  context;
+	uintptr_t  sigContext;
 	uintptr_t* buf;
 	uintptr_t  max;
 };

@@ -122,7 +122,7 @@ func TestTd(t *testing.T) {
 }
 
 // Test vectors are from FIPS 197:
-//	http://www.csrc.nist.gov/publications/fips/fips197/fips-197.pdf
+//	https://csrc.nist.gov/publications/fips/fips197/fips-197.pdf
 
 // Appendix A of FIPS 197: Key expansion examples
 type KeyTest struct {
@@ -231,12 +231,10 @@ L:
 				continue L
 			}
 		}
-		if dec != nil {
-			for j, v := range dec {
-				if v != tt.dec[j] {
-					t.Errorf("key %d: dec[%d] = %#x, want %#x", i, j, v, tt.dec[j])
-					continue L
-				}
+		for j, v := range dec {
+			if v != tt.dec[j] {
+				t.Errorf("key %d: dec[%d] = %#x, want %#x", i, j, v, tt.dec[j])
+				continue L
 			}
 		}
 	}
@@ -380,6 +378,6 @@ func BenchmarkExpand(b *testing.B) {
 	c := &aesCipher{make([]uint32, n), make([]uint32, n)}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		expandKeyGo(tt.key, c.enc, c.dec)
+		expandKey(tt.key, c.enc, c.dec)
 	}
 }

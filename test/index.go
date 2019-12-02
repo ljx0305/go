@@ -1,6 +1,6 @@
 // skip
 
-// Copyright 2010 The Go Authors.  All rights reserved.
+// Copyright 2010 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -251,7 +251,7 @@ func main() {
 		if c == "" && (i == "fgood" || i == "fbad") {
 			return
 		}
-		// Integral float constat is ok.
+		// Integral float constant is ok.
 		if c == "c" && n == "" && i == "fgood" {
 			if pass == 0 {
 				fmt.Fprintf(b, "\tuse(%s[%s])\n", pae, cni)

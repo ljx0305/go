@@ -162,7 +162,7 @@ loop:
 				if err != nil {
 					return nil, os.NewSyscallError("parsenetlinkrouteattr", err)
 				}
-				ifa := newAddr(ifi, ifam, attrs)
+				ifa := newAddr(ifam, attrs)
 				if ifa != nil {
 					ifat = append(ifat, ifa)
 				}
@@ -172,7 +172,7 @@ loop:
 	return ifat, nil
 }
 
-func newAddr(ifi *Interface, ifam *syscall.IfAddrmsg, attrs []syscall.NetlinkRouteAttr) Addr {
+func newAddr(ifam *syscall.IfAddrmsg, attrs []syscall.NetlinkRouteAttr) Addr {
 	var ipPointToPoint bool
 	// Seems like we need to make sure whether the IP interface
 	// stack consists of IP point-to-point numbered or unnumbered
@@ -193,9 +193,6 @@ func newAddr(ifi *Interface, ifam *syscall.IfAddrmsg, attrs []syscall.NetlinkRou
 		case syscall.AF_INET6:
 			ifa := &IPNet{IP: make(IP, IPv6len), Mask: CIDRMask(int(ifam.Prefixlen), 8*IPv6len)}
 			copy(ifa.IP, a.Value[:])
-			if ifa.IP.IsLinkLocalUnicast() {
-				ifa.Zone = ifi.Name
-			}
 			return ifa
 		}
 	}

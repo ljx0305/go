@@ -3,6 +3,8 @@
 // license that can be found in the LICENSE file.
 
 // Package quick implements utility functions to help with black box testing.
+//
+// The testing/quick package is frozen and is not accepting new features.
 package quick
 
 import (
@@ -12,9 +14,10 @@ import (
 	"math/rand"
 	"reflect"
 	"strings"
+	"time"
 )
 
-var defaultMaxCount = flag.Int("quickchecks", 100, "The default number of iterations for each check")
+var defaultMaxCount *int = flag.Int("quickchecks", 100, "The default number of iterations for each check")
 
 // A Generator can generate random values of its own type.
 type Generator interface {
@@ -41,8 +44,10 @@ func randFloat64(rand *rand.Rand) float64 {
 	return f
 }
 
-// randInt64 returns a random integer taking half the range of an int64.
-func randInt64(rand *rand.Rand) int64 { return rand.Int63() - 1<<62 }
+// randInt64 returns a random int64.
+func randInt64(rand *rand.Rand) int64 {
+	return int64(rand.Uint64())
+}
 
 // complexSize is the maximum length of arbitrary values that contain other
 // values.
@@ -98,22 +103,18 @@ func sizedValue(t reflect.Type, rand *rand.Rand, size int) (value reflect.Value,
 	case reflect.Uintptr:
 		v.SetUint(uint64(randInt64(rand)))
 	case reflect.Map:
-		if generateNilValue(rand) {
-			v.Set(reflect.Zero(concrete)) // Generate nil map.
-		} else {
-			numElems := rand.Intn(size)
-			v.Set(reflect.MakeMap(concrete))
-			for i := 0; i < numElems; i++ {
-				key, ok1 := sizedValue(concrete.Key(), rand, size)
-				value, ok2 := sizedValue(concrete.Elem(), rand, size)
-				if !ok1 || !ok2 {
-					return reflect.Value{}, false
-				}
-				v.SetMapIndex(key, value)
+		numElems := rand.Intn(size)
+		v.Set(reflect.MakeMap(concrete))
+		for i := 0; i < numElems; i++ {
+			key, ok1 := sizedValue(concrete.Key(), rand, size)
+			value, ok2 := sizedValue(concrete.Elem(), rand, size)
+			if !ok1 || !ok2 {
+				return reflect.Value{}, false
 			}
+			v.SetMapIndex(key, value)
 		}
 	case reflect.Ptr:
-		if generateNilValue(rand) {
+		if rand.Intn(size) == 0 {
 			v.Set(reflect.Zero(concrete)) // Generate nil pointer.
 		} else {
 			elem, ok := sizedValue(concrete.Elem(), rand, size)
@@ -124,20 +125,15 @@ func sizedValue(t reflect.Type, rand *rand.Rand, size int) (value reflect.Value,
 			v.Elem().Set(elem)
 		}
 	case reflect.Slice:
-		if generateNilValue(rand) {
-			v.Set(reflect.Zero(concrete)) // Generate nil slice.
-		} else {
-			slCap := rand.Intn(size)
-			slLen := rand.Intn(slCap + 1)
-			sizeLeft := size - slCap
-			v.Set(reflect.MakeSlice(concrete, slLen, slCap))
-			for i := 0; i < slLen; i++ {
-				elem, ok := sizedValue(concrete.Elem(), rand, sizeLeft)
-				if !ok {
-					return reflect.Value{}, false
-				}
-				v.Index(i).Set(elem)
+		numElems := rand.Intn(size)
+		sizeLeft := size - numElems
+		v.Set(reflect.MakeSlice(concrete, numElems, numElems))
+		for i := 0; i < numElems; i++ {
+			elem, ok := sizedValue(concrete.Elem(), rand, sizeLeft)
+			if !ok {
+				return reflect.Value{}, false
 			}
+			v.Index(i).Set(elem)
 		}
 	case reflect.Array:
 		for i := 0; i < v.Len(); i++ {
@@ -179,19 +175,21 @@ func sizedValue(t reflect.Type, rand *rand.Rand, size int) (value reflect.Value,
 
 // A Config structure contains options for running a test.
 type Config struct {
-	// MaxCount sets the maximum number of iterations. If zero,
-	// MaxCountScale is used.
+	// MaxCount sets the maximum number of iterations.
+	// If zero, MaxCountScale is used.
 	MaxCount int
-	// MaxCountScale is a non-negative scale factor applied to the default
-	// maximum. If zero, the default is unchanged.
+	// MaxCountScale is a non-negative scale factor applied to the
+	// default maximum.
+	// A count of zero implies the default, which is usually 100
+	// but can be set by the -quickchecks flag.
 	MaxCountScale float64
-	// If non-nil, rand is a source of random numbers. Otherwise a default
-	// pseudo-random source will be used.
+	// Rand specifies a source of random numbers.
+	// If nil, a default pseudo-random source will be used.
 	Rand *rand.Rand
-	// If non-nil, the Values function generates a slice of arbitrary
-	// reflect.Values that are congruent with the arguments to the function
-	// being tested. Otherwise, the top-level Value function is used
-	// to generate them.
+	// Values specifies a function to generate a slice of
+	// arbitrary reflect.Values that are congruent with the
+	// arguments to the function being tested.
+	// If nil, the top-level Value function is used to generate them.
 	Values func([]reflect.Value, *rand.Rand)
 }
 
@@ -200,7 +198,7 @@ var defaultConfig Config
 // getRand returns the *rand.Rand to use for a given Config.
 func (c *Config) getRand() *rand.Rand {
 	if c.Rand == nil {
-		return rand.New(rand.NewSource(0))
+		return rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
 	return c.Rand
 }
@@ -385,5 +383,3 @@ func toString(interfaces []interface{}) string {
 	}
 	return strings.Join(s, ", ")
 }
-
-func generateNilValue(r *rand.Rand) bool { return r.Intn(20) == 0 }

@@ -23,7 +23,7 @@
 // Arguments are passed in CX, DX, R8, R9, the rest is on stack.
 // Callee-saved registers are: BX, BP, DI, SI, R12-R15.
 // SP must be 16-byte aligned. Windows also requires "stack-backing" for the 4 register arguments:
-// http://msdn.microsoft.com/en-us/library/ms235286.aspx
+// https://msdn.microsoft.com/en-us/library/ms235286.aspx
 // We do not do this, because it seems to be intended for vararg/unprototyped functions.
 // Gcc-compiled race runtime does not try to use that space.
 
@@ -338,6 +338,7 @@ racecallatomic_ignore:
 	// An attempt to synchronize on the address would cause crash.
 	MOVQ	AX, R15	// remember the original function
 	MOVQ	$__tsan_go_ignore_sync_begin(SB), AX
+	get_tls(R12)
 	MOVQ	g(R12), R14
 	MOVQ	g_racectx(R14), RARG0	// goroutine context
 	CALL	racecall<>(SB)
@@ -384,7 +385,24 @@ call:
 // C->Go callback thunk that allows to call runtime·racesymbolize from C code.
 // Direct Go->C race call has only switched SP, finish g->g0 switch by setting correct g.
 // The overall effect of Go->C->Go call chain is similar to that of mcall.
-TEXT	runtime·racesymbolizethunk(SB), NOSPLIT, $56-8
+// RARG0 contains command code. RARG1 contains command-specific context.
+// See racecallback for command codes.
+TEXT	runtime·racecallbackthunk(SB), NOSPLIT, $56-8
+	// Handle command raceGetProcCmd (0) here.
+	// First, code below assumes that we are on curg, while raceGetProcCmd
+	// can be executed on g0. Second, it is called frequently, so will
+	// benefit from this fast path.
+	CMPQ	RARG0, $0
+	JNE	rest
+	get_tls(RARG0)
+	MOVQ	g(RARG0), RARG0
+	MOVQ	g_m(RARG0), RARG0
+	MOVQ	m_p(RARG0), RARG0
+	MOVQ	p_raceprocctx(RARG0), RARG0
+	MOVQ	RARG0, (RARG1)
+	RET
+
+rest:
 	// Save callee-saved registers (Go code won't respect that).
 	// This is superset of darwin/linux/windows registers.
 	PUSHQ	BX
@@ -398,11 +416,15 @@ TEXT	runtime·racesymbolizethunk(SB), NOSPLIT, $56-8
 	// Set g = g0.
 	get_tls(R12)
 	MOVQ	g(R12), R13
-	MOVQ	g_m(R13), R13
-	MOVQ	m_g0(R13), R14
-	MOVQ	R14, g(R12)	// g = m->g0
+	MOVQ	g_m(R13), R14
+	MOVQ	m_g0(R14), R15
+	CMPQ	R13, R15
+	JEQ	noswitch	// branch if already on g0
+	MOVQ	R15, g(R12)	// g = m->g0
+	PUSHQ	RARG1	// func arg
 	PUSHQ	RARG0	// func arg
-	CALL	runtime·racesymbolize(SB)
+	CALL	runtime·racecallback(SB)
+	POPQ	R12
 	POPQ	R12
 	// All registers are smashed after Go code, reload.
 	get_tls(R12)
@@ -410,6 +432,7 @@ TEXT	runtime·racesymbolizethunk(SB), NOSPLIT, $56-8
 	MOVQ	g_m(R13), R13
 	MOVQ	m_curg(R13), R14
 	MOVQ	R14, g(R12)	// g = m->curg
+ret:
 	// Restore callee-saved registers.
 	POPQ	R15
 	POPQ	R14
@@ -420,3 +443,12 @@ TEXT	runtime·racesymbolizethunk(SB), NOSPLIT, $56-8
 	POPQ	BP
 	POPQ	BX
 	RET
+
+noswitch:
+	// already on g0
+	PUSHQ	RARG1	// func arg
+	PUSHQ	RARG0	// func arg
+	CALL	runtime·racecallback(SB)
+	POPQ	R12
+	POPQ	R12
+	JMP	ret

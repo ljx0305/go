@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"compress/bzip2"
 	"fmt"
+	"internal/testenv"
 	"io"
 	"os"
 	"path/filepath"
@@ -658,45 +659,71 @@ func makeText(n int) []byte {
 	return text
 }
 
-func benchmark(b *testing.B, re string, n int) {
-	r := MustCompile(re)
-	t := makeText(n)
-	b.ResetTimer()
-	b.SetBytes(int64(n))
-	for i := 0; i < b.N; i++ {
-		if r.Match(t) {
-			b.Fatal("match!")
+func BenchmarkMatch(b *testing.B) {
+	isRaceBuilder := strings.HasSuffix(testenv.Builder(), "-race")
+
+	for _, data := range benchData {
+		r := MustCompile(data.re)
+		for _, size := range benchSizes {
+			if (isRaceBuilder || testing.Short()) && size.n > 1<<10 {
+				continue
+			}
+			t := makeText(size.n)
+			b.Run(data.name+"/"+size.name, func(b *testing.B) {
+				b.SetBytes(int64(size.n))
+				for i := 0; i < b.N; i++ {
+					if r.Match(t) {
+						b.Fatal("match!")
+					}
+				}
+			})
 		}
 	}
 }
 
-const (
-	easy0  = "ABCDEFGHIJKLMNOPQRSTUVWXYZ$"
-	easy1  = "A[AB]B[BC]C[CD]D[DE]E[EF]F[FG]G[GH]H[HI]I[IJ]J$"
-	medium = "[XYZ]ABCDEFGHIJKLMNOPQRSTUVWXYZ$"
-	hard   = "[ -~]*ABCDEFGHIJKLMNOPQRSTUVWXYZ$"
-)
+func BenchmarkMatch_onepass_regex(b *testing.B) {
+	isRaceBuilder := strings.HasSuffix(testenv.Builder(), "-race")
+	r := MustCompile(`(?s)\A.*\z`)
+	if r.onepass == nil {
+		b.Fatalf("want onepass regex, but %q is not onepass", r)
+	}
+	for _, size := range benchSizes {
+		if (isRaceBuilder || testing.Short()) && size.n > 1<<10 {
+			continue
+		}
+		t := makeText(size.n)
+		b.Run(size.name, func(b *testing.B) {
+			b.SetBytes(int64(size.n))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if !r.Match(t) {
+					b.Fatal("not match!")
+				}
+			}
+		})
+	}
+}
 
-func BenchmarkMatchEasy0_32(b *testing.B)   { benchmark(b, easy0, 32<<0) }
-func BenchmarkMatchEasy0_1K(b *testing.B)   { benchmark(b, easy0, 1<<10) }
-func BenchmarkMatchEasy0_32K(b *testing.B)  { benchmark(b, easy0, 32<<10) }
-func BenchmarkMatchEasy0_1M(b *testing.B)   { benchmark(b, easy0, 1<<20) }
-func BenchmarkMatchEasy0_32M(b *testing.B)  { benchmark(b, easy0, 32<<20) }
-func BenchmarkMatchEasy1_32(b *testing.B)   { benchmark(b, easy1, 32<<0) }
-func BenchmarkMatchEasy1_1K(b *testing.B)   { benchmark(b, easy1, 1<<10) }
-func BenchmarkMatchEasy1_32K(b *testing.B)  { benchmark(b, easy1, 32<<10) }
-func BenchmarkMatchEasy1_1M(b *testing.B)   { benchmark(b, easy1, 1<<20) }
-func BenchmarkMatchEasy1_32M(b *testing.B)  { benchmark(b, easy1, 32<<20) }
-func BenchmarkMatchMedium_32(b *testing.B)  { benchmark(b, medium, 32<<0) }
-func BenchmarkMatchMedium_1K(b *testing.B)  { benchmark(b, medium, 1<<10) }
-func BenchmarkMatchMedium_32K(b *testing.B) { benchmark(b, medium, 32<<10) }
-func BenchmarkMatchMedium_1M(b *testing.B)  { benchmark(b, medium, 1<<20) }
-func BenchmarkMatchMedium_32M(b *testing.B) { benchmark(b, medium, 32<<20) }
-func BenchmarkMatchHard_32(b *testing.B)    { benchmark(b, hard, 32<<0) }
-func BenchmarkMatchHard_1K(b *testing.B)    { benchmark(b, hard, 1<<10) }
-func BenchmarkMatchHard_32K(b *testing.B)   { benchmark(b, hard, 32<<10) }
-func BenchmarkMatchHard_1M(b *testing.B)    { benchmark(b, hard, 1<<20) }
-func BenchmarkMatchHard_32M(b *testing.B)   { benchmark(b, hard, 32<<20) }
+var benchData = []struct{ name, re string }{
+	{"Easy0", "ABCDEFGHIJKLMNOPQRSTUVWXYZ$"},
+	{"Easy0i", "(?i)ABCDEFGHIJklmnopqrstuvwxyz$"},
+	{"Easy1", "A[AB]B[BC]C[CD]D[DE]E[EF]F[FG]G[GH]H[HI]I[IJ]J$"},
+	{"Medium", "[XYZ]ABCDEFGHIJKLMNOPQRSTUVWXYZ$"},
+	{"Hard", "[ -~]*ABCDEFGHIJKLMNOPQRSTUVWXYZ$"},
+	{"Hard1", "ABCD|CDEF|EFGH|GHIJ|IJKL|KLMN|MNOP|OPQR|QRST|STUV|UVWX|WXYZ"},
+}
+
+var benchSizes = []struct {
+	name string
+	n    int
+}{
+	{"16", 16},
+	{"32", 32},
+	{"1K", 1 << 10},
+	{"32K", 32 << 10},
+	{"1M", 1 << 20},
+	{"32M", 32 << 20},
+}
 
 func TestLongest(t *testing.T) {
 	re, err := Compile(`a(|b)`)

@@ -2,9 +2,14 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// +build !js
+
 package net
 
 import (
+	"errors"
+	"fmt"
+	"internal/testenv"
 	"io"
 	"net/internal/socktest"
 	"os"
@@ -15,7 +20,7 @@ import (
 
 func TestCloseRead(t *testing.T) {
 	switch runtime.GOOS {
-	case "nacl", "plan9":
+	case "plan9":
 		t.Skipf("not supported on %s", runtime.GOOS)
 	}
 
@@ -52,7 +57,7 @@ func TestCloseRead(t *testing.T) {
 			err = c.CloseRead()
 		}
 		if err != nil {
-			if perr := parseCloseError(err); perr != nil {
+			if perr := parseCloseError(err, true); perr != nil {
 				t.Error(perr)
 			}
 			t.Fatal(err)
@@ -67,7 +72,7 @@ func TestCloseRead(t *testing.T) {
 
 func TestCloseWrite(t *testing.T) {
 	switch runtime.GOOS {
-	case "nacl", "plan9":
+	case "plan9":
 		t.Skipf("not supported on %s", runtime.GOOS)
 	}
 
@@ -92,7 +97,7 @@ func TestCloseWrite(t *testing.T) {
 			err = c.CloseWrite()
 		}
 		if err != nil {
-			if perr := parseCloseError(err); perr != nil {
+			if perr := parseCloseError(err, true); perr != nil {
 				t.Error(perr)
 			}
 			t.Error(err)
@@ -137,7 +142,7 @@ func TestCloseWrite(t *testing.T) {
 			err = c.CloseWrite()
 		}
 		if err != nil {
-			if perr := parseCloseError(err); perr != nil {
+			if perr := parseCloseError(err, true); perr != nil {
 				t.Error(perr)
 			}
 			t.Fatal(err)
@@ -182,7 +187,7 @@ func TestConnClose(t *testing.T) {
 		defer c.Close()
 
 		if err := c.Close(); err != nil {
-			if perr := parseCloseError(err); perr != nil {
+			if perr := parseCloseError(err, false); perr != nil {
 				t.Error(perr)
 			}
 			t.Fatal(err)
@@ -213,7 +218,7 @@ func TestListenerClose(t *testing.T) {
 
 		dst := ln.Addr().String()
 		if err := ln.Close(); err != nil {
-			if perr := parseCloseError(err); perr != nil {
+			if perr := parseCloseError(err, false); perr != nil {
 				t.Error(perr)
 			}
 			t.Fatal(err)
@@ -267,7 +272,7 @@ func TestPacketConnClose(t *testing.T) {
 		defer c.Close()
 
 		if err := c.Close(); err != nil {
-			if perr := parseCloseError(err); perr != nil {
+			if perr := parseCloseError(err, false); perr != nil {
 				t.Error(perr)
 			}
 			t.Fatal(err)
@@ -280,7 +285,6 @@ func TestPacketConnClose(t *testing.T) {
 	}
 }
 
-// nacl was previous failing to reuse an address.
 func TestListenCloseListen(t *testing.T) {
 	const maxTries = 10
 	for tries := 0; tries < maxTries; tries++ {
@@ -290,14 +294,14 @@ func TestListenCloseListen(t *testing.T) {
 		}
 		addr := ln.Addr().String()
 		if err := ln.Close(); err != nil {
-			if perr := parseCloseError(err); perr != nil {
+			if perr := parseCloseError(err, false); perr != nil {
 				t.Error(perr)
 			}
 			t.Fatal(err)
 		}
 		ln, err = Listen("tcp", addr)
 		if err == nil {
-			// Success. nacl couldn't do this before.
+			// Success. (This test didn't always make it here earlier.)
 			ln.Close()
 			return
 		}
@@ -359,4 +363,191 @@ func TestAcceptIgnoreAbortedConnRequest(t *testing.T) {
 	for err := range operr {
 		t.Error(err)
 	}
+}
+
+func TestZeroByteRead(t *testing.T) {
+	for _, network := range []string{"tcp", "unix", "unixpacket"} {
+		if !testableNetwork(network) {
+			t.Logf("skipping %s test", network)
+			continue
+		}
+
+		ln, err := newLocalListener(network)
+		if err != nil {
+			t.Fatal(err)
+		}
+		connc := make(chan Conn, 1)
+		go func() {
+			defer ln.Close()
+			c, err := ln.Accept()
+			if err != nil {
+				t.Error(err)
+			}
+			connc <- c // might be nil
+		}()
+		c, err := Dial(network, ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		sc := <-connc
+		if sc == nil {
+			continue
+		}
+		defer sc.Close()
+
+		if runtime.GOOS == "windows" {
+			// A zero byte read on Windows caused a wait for readability first.
+			// Rather than change that behavior, satisfy it in this test.
+			// See Issue 15735.
+			go io.WriteString(sc, "a")
+		}
+
+		n, err := c.Read(nil)
+		if n != 0 || err != nil {
+			t.Errorf("%s: zero byte client read = %v, %v; want 0, nil", network, n, err)
+		}
+
+		if runtime.GOOS == "windows" {
+			// Same as comment above.
+			go io.WriteString(c, "a")
+		}
+		n, err = sc.Read(nil)
+		if n != 0 || err != nil {
+			t.Errorf("%s: zero byte server read = %v, %v; want 0, nil", network, n, err)
+		}
+	}
+}
+
+// withTCPConnPair sets up a TCP connection between two peers, then
+// runs peer1 and peer2 concurrently. withTCPConnPair returns when
+// both have completed.
+func withTCPConnPair(t *testing.T, peer1, peer2 func(c *TCPConn) error) {
+	ln, err := newLocalListener("tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	errc := make(chan error, 2)
+	go func() {
+		c1, err := ln.Accept()
+		if err != nil {
+			errc <- err
+			return
+		}
+		defer c1.Close()
+		errc <- peer1(c1.(*TCPConn))
+	}()
+	go func() {
+		c2, err := Dial("tcp", ln.Addr().String())
+		if err != nil {
+			errc <- err
+			return
+		}
+		defer c2.Close()
+		errc <- peer2(c2.(*TCPConn))
+	}()
+	for i := 0; i < 2; i++ {
+		if err := <-errc; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Tests that a blocked Read is interrupted by a concurrent SetReadDeadline
+// modifying that Conn's read deadline to the past.
+// See golang.org/cl/30164 which documented this. The net/http package
+// depends on this.
+func TestReadTimeoutUnblocksRead(t *testing.T) {
+	serverDone := make(chan struct{})
+	server := func(cs *TCPConn) error {
+		defer close(serverDone)
+		errc := make(chan error, 1)
+		go func() {
+			defer close(errc)
+			go func() {
+				// TODO: find a better way to wait
+				// until we're blocked in the cs.Read
+				// call below. Sleep is lame.
+				time.Sleep(100 * time.Millisecond)
+
+				// Interrupt the upcoming Read, unblocking it:
+				cs.SetReadDeadline(time.Unix(123, 0)) // time in the past
+			}()
+			var buf [1]byte
+			n, err := cs.Read(buf[:1])
+			if n != 0 || err == nil {
+				errc <- fmt.Errorf("Read = %v, %v; want 0, non-nil", n, err)
+			}
+		}()
+		select {
+		case err := <-errc:
+			return err
+		case <-time.After(5 * time.Second):
+			buf := make([]byte, 2<<20)
+			buf = buf[:runtime.Stack(buf, true)]
+			println("Stacks at timeout:\n", string(buf))
+			return errors.New("timeout waiting for Read to finish")
+		}
+
+	}
+	// Do nothing in the client. Never write. Just wait for the
+	// server's half to be done.
+	client := func(*TCPConn) error {
+		<-serverDone
+		return nil
+	}
+	withTCPConnPair(t, client, server)
+}
+
+// Issue 17695: verify that a blocked Read is woken up by a Close.
+func TestCloseUnblocksRead(t *testing.T) {
+	t.Parallel()
+	server := func(cs *TCPConn) error {
+		// Give the client time to get stuck in a Read:
+		time.Sleep(20 * time.Millisecond)
+		cs.Close()
+		return nil
+	}
+	client := func(ss *TCPConn) error {
+		n, err := ss.Read([]byte{0})
+		if n != 0 || err != io.EOF {
+			return fmt.Errorf("Read = %v, %v; want 0, EOF", n, err)
+		}
+		return nil
+	}
+	withTCPConnPair(t, client, server)
+}
+
+// Issue 24808: verify that ECONNRESET is not temporary for read.
+func TestNotTemporaryRead(t *testing.T) {
+	if runtime.GOOS == "freebsd" {
+		testenv.SkipFlaky(t, 25289)
+	}
+	if runtime.GOOS == "aix" {
+		testenv.SkipFlaky(t, 29685)
+	}
+	t.Parallel()
+	server := func(cs *TCPConn) error {
+		cs.SetLinger(0)
+		// Give the client time to get stuck in a Read.
+		time.Sleep(50 * time.Millisecond)
+		cs.Close()
+		return nil
+	}
+	client := func(ss *TCPConn) error {
+		_, err := ss.Read([]byte{0})
+		if err == nil {
+			return errors.New("Read succeeded unexpectedly")
+		} else if err == io.EOF {
+			// This happens on Plan 9.
+			return nil
+		} else if ne, ok := err.(Error); !ok {
+			return fmt.Errorf("unexpected error %v", err)
+		} else if ne.Temporary() {
+			return fmt.Errorf("unexpected temporary error %v", err)
+		}
+		return nil
+	}
+	withTCPConnPair(t, client, server)
 }

@@ -4,8 +4,6 @@
 
 package ssa
 
-const flagRegMask = regMask(1) << 33 // TODO: arch-specific
-
 // flagalloc allocates the flag register among all the flag-generating
 // instructions. Flag values are recomputed if they need to be
 // spilled/restored.
@@ -13,27 +11,31 @@ func flagalloc(f *Func) {
 	// Compute the in-register flag value we want at the end of
 	// each block. This is basically a best-effort live variable
 	// analysis, so it can be much simpler than a full analysis.
-	// TODO: do we really need to keep flag values live across blocks?
-	// Could we force the flags register to be unused at basic block
-	// boundaries?  Then we wouldn't need this computation.
 	end := make([]*Value, f.NumBlocks())
+	po := f.postorder()
 	for n := 0; n < 2; n++ {
-		// Walk blocks backwards. Poor-man's postorder traversal.
-		for i := len(f.Blocks) - 1; i >= 0; i-- {
-			b := f.Blocks[i]
+		for _, b := range po {
 			// Walk values backwards to figure out what flag
 			// value we want in the flag register at the start
 			// of the block.
-			flag := end[b.ID]
-			if b.Control != nil && b.Control.Type.IsFlags() {
-				flag = b.Control
+			var flag *Value
+			for _, c := range b.ControlValues() {
+				if c.Type.IsFlags() {
+					if flag != nil {
+						panic("cannot have multiple controls using flags")
+					}
+					flag = c
+				}
+			}
+			if flag == nil {
+				flag = end[b.ID]
 			}
 			for j := len(b.Values) - 1; j >= 0; j-- {
 				v := b.Values[j]
 				if v == flag {
 					flag = nil
 				}
-				if opcodeTable[v.Op].reg.clobbers&flagRegMask != 0 {
+				if v.clobbersFlags() {
 					flag = nil
 				}
 				for _, a := range v.Args {
@@ -43,7 +45,8 @@ func flagalloc(f *Func) {
 				}
 			}
 			if flag != nil {
-				for _, p := range b.Preds {
+				for _, e := range b.Preds {
+					p := e.b
 					end[p.ID] = flag
 				}
 			}
@@ -54,28 +57,67 @@ func flagalloc(f *Func) {
 	// we can leave in the flags register at the end of the block. (There
 	// is no place to put a flag regeneration instruction.)
 	for _, b := range f.Blocks {
-		v := b.Control
-		if v != nil && v.Type.IsFlags() && end[b.ID] != v {
-			end[b.ID] = nil
-		}
 		if b.Kind == BlockDefer {
 			// Defer blocks internally use/clobber the flags value.
 			end[b.ID] = nil
+			continue
+		}
+		for _, v := range b.ControlValues() {
+			if v.Type.IsFlags() && end[b.ID] != v {
+				end[b.ID] = nil
+			}
 		}
 	}
 
-	// Add flag recomputations where they are needed.
+	// Compute which flags values will need to be spilled.
+	spill := map[ID]bool{}
+	for _, b := range f.Blocks {
+		var flag *Value
+		if len(b.Preds) > 0 {
+			flag = end[b.Preds[0].b.ID]
+		}
+		for _, v := range b.Values {
+			for _, a := range v.Args {
+				if !a.Type.IsFlags() {
+					continue
+				}
+				if a == flag {
+					continue
+				}
+				// a will need to be restored here.
+				spill[a.ID] = true
+				flag = a
+			}
+			if v.clobbersFlags() {
+				flag = nil
+			}
+			if v.Type.IsFlags() {
+				flag = v
+			}
+		}
+		for _, v := range b.ControlValues() {
+			if v != flag && v.Type.IsFlags() {
+				spill[v.ID] = true
+			}
+		}
+		if v := end[b.ID]; v != nil && v != flag {
+			spill[v.ID] = true
+		}
+	}
+
+	// Add flag spill and recomputation where they are needed.
 	// TODO: Remove original instructions if they are never used.
 	var oldSched []*Value
 	for _, b := range f.Blocks {
 		oldSched = append(oldSched[:0], b.Values...)
 		b.Values = b.Values[:0]
-		// The current live flag value the pre-flagalloc copy).
+		// The current live flag value (the pre-flagalloc copy).
 		var flag *Value
 		if len(b.Preds) > 0 {
-			flag = end[b.Preds[0].ID]
+			flag = end[b.Preds[0].b.ID]
 			// Note: the following condition depends on the lack of critical edges.
-			for _, p := range b.Preds[1:] {
+			for _, e := range b.Preds[1:] {
+				p := e.b
 				if end[p.ID] != flag {
 					f.Fatalf("live flag in %s's predecessors not consistent", b)
 				}
@@ -85,6 +127,15 @@ func flagalloc(f *Func) {
 			if v.Op == OpPhi && v.Type.IsFlags() {
 				f.Fatalf("phi of flags not supported: %s", v.LongString())
 			}
+
+			// If v will be spilled, and v uses memory, then we must split it
+			// into a load + a flag generator.
+			if spill[v.ID] && v.MemoryArg() != nil {
+				if !f.Config.splitLoad(v) {
+					f.Fatalf("can't split flag generator: %s", v.LongString())
+				}
+			}
+
 			// Make sure any flag arg of v is in the flags register.
 			// If not, recompute it.
 			for i, a := range v.Args {
@@ -95,7 +146,7 @@ func flagalloc(f *Func) {
 					continue
 				}
 				// Recalculate a
-				c := a.copyInto(b)
+				c := copyFlags(a, b)
 				// Update v.
 				v.SetArg(i, c)
 				// Remember the most-recently computed flag value.
@@ -103,23 +154,25 @@ func flagalloc(f *Func) {
 			}
 			// Issue v.
 			b.Values = append(b.Values, v)
-			if opcodeTable[v.Op].reg.clobbers&flagRegMask != 0 {
+			if v.clobbersFlags() {
 				flag = nil
 			}
 			if v.Type.IsFlags() {
 				flag = v
 			}
 		}
-		if v := b.Control; v != nil && v != flag && v.Type.IsFlags() {
-			// Recalculate control value.
-			c := v.copyInto(b)
-			b.SetControl(c)
-			flag = v
+		for i, v := range b.ControlValues() {
+			if v != flag && v.Type.IsFlags() {
+				// Recalculate control value.
+				c := copyFlags(v, b)
+				b.ReplaceControl(i, c)
+				flag = v
+			}
 		}
 		if v := end[b.ID]; v != nil && v != flag {
 			// Need to reissue flag generator for use by
 			// subsequent blocks.
-			_ = v.copyInto(b)
+			copyFlags(v, b)
 			// Note: this flag generator is not properly linked up
 			// with the flag users. This breaks the SSA representation.
 			// We could fix up the users with another pass, but for now
@@ -132,4 +185,33 @@ func flagalloc(f *Func) {
 	for _, b := range f.Blocks {
 		b.FlagsLiveAtEnd = end[b.ID] != nil
 	}
+}
+
+func (v *Value) clobbersFlags() bool {
+	if opcodeTable[v.Op].clobberFlags {
+		return true
+	}
+	if v.Type.IsTuple() && (v.Type.FieldType(0).IsFlags() || v.Type.FieldType(1).IsFlags()) {
+		// This case handles the possibility where a flag value is generated but never used.
+		// In that case, there's no corresponding Select to overwrite the flags value,
+		// so we must consider flags clobbered by the tuple-generating instruction.
+		return true
+	}
+	return false
+}
+
+// copyFlags copies v (flag generator) into b, returns the copy.
+// If v's arg is also flags, copy recursively.
+func copyFlags(v *Value, b *Block) *Value {
+	flagsArgs := make(map[int]*Value)
+	for i, a := range v.Args {
+		if a.Type.IsFlags() || a.Type.IsTuple() {
+			flagsArgs[i] = copyFlags(a, b)
+		}
+	}
+	c := v.copyInto(b)
+	for i, a := range flagsArgs {
+		c.SetArg(i, a)
+	}
+	return c
 }

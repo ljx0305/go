@@ -66,7 +66,7 @@ type Header struct {
 // Only the first header is recorded in the Reader fields.
 //
 // Gzip files store a length and checksum of the uncompressed data.
-// The Reader will return a ErrChecksum when Read
+// The Reader will return an ErrChecksum when Read
 // reaches the end of the uncompressed data if it does not
 // have the expected length or checksum. Clients should treat data
 // returned by Read as tentative until they receive the io.EOF
@@ -126,8 +126,8 @@ func (z *Reader) Reset(r io.Reader) error {
 // can be useful when reading file formats that distinguish individual gzip
 // data streams or mix gzip data streams with other data streams.
 // In this mode, when the Reader reaches the end of the data stream,
-// Read returns io.EOF. If the underlying reader implements io.ByteReader,
-// it will be left positioned just after the gzip stream.
+// Read returns io.EOF. The underlying reader must implement io.ByteReader
+// in order to be left positioned just after the gzip stream.
 // To start the next stream, call z.Reset(r) followed by z.Multistream(false).
 // If there is no next stream, z.Reset(r) will return io.EOF.
 func (z *Reader) Multistream(ok bool) {
@@ -186,7 +186,11 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 		return hdr, ErrHeader
 	}
 	flg := z.buf[3]
-	hdr.ModTime = time.Unix(int64(le.Uint32(z.buf[4:8])), 0)
+	if t := int64(le.Uint32(z.buf[4:8])); t > 0 {
+		// Section 2.3.1, the zero value for MTIME means that the
+		// modified time is not set.
+		hdr.ModTime = time.Unix(t, 0)
+	}
 	// z.buf[8] is XFL and is currently ignored.
 	hdr.OS = z.buf[9]
 	z.digest = crc32.ChecksumIEEE(z.buf[:10])
@@ -238,6 +242,7 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 	return hdr, nil
 }
 
+// Read implements io.Reader, reading uncompressed bytes from its underlying Reader.
 func (z *Reader) Read(p []byte) (n int, err error) {
 	if z.err != nil {
 		return 0, z.err
@@ -282,4 +287,6 @@ func (z *Reader) Read(p []byte) (n int, err error) {
 }
 
 // Close closes the Reader. It does not close the underlying io.Reader.
+// In order for the GZIP checksum to be verified, the reader must be
+// fully consumed until the io.EOF.
 func (z *Reader) Close() error { return z.decompressor.Close() }

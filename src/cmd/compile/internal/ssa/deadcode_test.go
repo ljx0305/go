@@ -4,20 +4,25 @@
 
 package ssa
 
-import "testing"
+import (
+	"cmd/compile/internal/types"
+	"fmt"
+	"strconv"
+	"testing"
+)
 
 func TestDeadLoop(t *testing.T) {
 	c := testConfig(t)
-	fun := Fun(c, "entry",
+	fun := c.Fun("entry",
 		Bloc("entry",
-			Valu("mem", OpInitMem, TypeMem, 0, nil),
+			Valu("mem", OpInitMem, types.TypeMem, 0, nil),
 			Goto("exit")),
 		Bloc("exit",
 			Exit("mem")),
 		// dead loop
 		Bloc("deadblock",
 			// dead value in dead block
-			Valu("deadval", OpConstBool, TypeBool, 1, nil),
+			Valu("deadval", OpConstBool, c.config.Types.Bool, 1, nil),
 			If("deadval", "deadblock", "exit")))
 
 	CheckFunc(fun.f)
@@ -38,10 +43,10 @@ func TestDeadLoop(t *testing.T) {
 
 func TestDeadValue(t *testing.T) {
 	c := testConfig(t)
-	fun := Fun(c, "entry",
+	fun := c.Fun("entry",
 		Bloc("entry",
-			Valu("mem", OpInitMem, TypeMem, 0, nil),
-			Valu("deadval", OpConst64, TypeInt64, 37, nil),
+			Valu("mem", OpInitMem, types.TypeMem, 0, nil),
+			Valu("deadval", OpConst64, c.config.Types.Int64, 37, nil),
 			Goto("exit")),
 		Bloc("exit",
 			Exit("mem")))
@@ -61,10 +66,10 @@ func TestDeadValue(t *testing.T) {
 
 func TestNeverTaken(t *testing.T) {
 	c := testConfig(t)
-	fun := Fun(c, "entry",
+	fun := c.Fun("entry",
 		Bloc("entry",
-			Valu("cond", OpConstBool, TypeBool, 0, nil),
-			Valu("mem", OpInitMem, TypeMem, 0, nil),
+			Valu("cond", OpConstBool, c.config.Types.Bool, 0, nil),
+			Valu("mem", OpInitMem, types.TypeMem, 0, nil),
 			If("cond", "then", "else")),
 		Bloc("then",
 			Goto("exit")),
@@ -96,10 +101,10 @@ func TestNeverTaken(t *testing.T) {
 
 func TestNestedDeadBlocks(t *testing.T) {
 	c := testConfig(t)
-	fun := Fun(c, "entry",
+	fun := c.Fun("entry",
 		Bloc("entry",
-			Valu("mem", OpInitMem, TypeMem, 0, nil),
-			Valu("cond", OpConstBool, TypeBool, 0, nil),
+			Valu("mem", OpInitMem, types.TypeMem, 0, nil),
+			Valu("cond", OpConstBool, c.config.Types.Bool, 0, nil),
 			If("cond", "b2", "b4")),
 		Bloc("b2",
 			If("cond", "b3", "b4")),
@@ -130,5 +135,27 @@ func TestNestedDeadBlocks(t *testing.T) {
 				t.Errorf("constant condition still present")
 			}
 		}
+	}
+}
+
+func BenchmarkDeadCode(b *testing.B) {
+	for _, n := range [...]int{1, 10, 100, 1000, 10000, 100000, 200000} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			c := testConfig(b)
+			blocks := make([]bloc, 0, n+2)
+			blocks = append(blocks,
+				Bloc("entry",
+					Valu("mem", OpInitMem, types.TypeMem, 0, nil),
+					Goto("exit")))
+			blocks = append(blocks, Bloc("exit", Exit("mem")))
+			for i := 0; i < n; i++ {
+				blocks = append(blocks, Bloc(fmt.Sprintf("dead%d", i), Goto("exit")))
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				fun := c.Fun("entry", blocks...)
+				Deadcode(fun.f)
+			}
+		})
 	}
 }

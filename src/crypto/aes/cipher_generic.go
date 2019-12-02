@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build !amd64,!s390x
+// +build !amd64,!s390x,!ppc64le,!arm64
 
 package aes
 
@@ -17,4 +17,10 @@ import (
 // newCipherGeneric if needed).
 func newCipher(key []byte) (cipher.Block, error) {
 	return newCipherGeneric(key)
+}
+
+// expandKey is used by BenchmarkExpand and should
+// call an assembly implementation if one is available.
+func expandKey(key []byte, enc, dec []uint32) {
+	expandKeyGo(key, enc, dec)
 }
